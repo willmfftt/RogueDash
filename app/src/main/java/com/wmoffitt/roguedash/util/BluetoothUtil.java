@@ -3,7 +3,12 @@ package com.wmoffitt.roguedash.util;
 import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.Handler;
+import android.os.Looper;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 
@@ -20,11 +25,16 @@ public class BluetoothUtil {
         void onBluetoothDenied();
     }
 
+    public interface BluetoothDiscoveryListener {
+        void onBluetoothDiscovered(@NonNull final BluetoothDevice device);
+        void onBluetoothDiscoveryTimeout();
+    }
+
     public static final int REQUEST_ENABLE_BT = 1000;
 
-    @Nullable
-    private static BluetoothAdapter mBluetoothAdapter;
+    @Nullable private static BluetoothAdapter mBluetoothAdapter;
     private static boolean mBluetoothNonexistent;
+    @Nullable private static BroadcastReceiver mBluetoothReceiver;
 
     public static BluetoothAdapter getBluetoothAdapter() {
         if (mBluetoothAdapter == null && !mBluetoothNonexistent) {
@@ -69,6 +79,56 @@ public class BluetoothUtil {
             }
         }
         return false;
+    }
+
+    public static void startDiscoveryOfDeviceName(@NonNull final Context context,
+                                                  @NonNull final String deviceName,
+                                                  @NonNull final BluetoothDiscoveryListener listener) {
+        if (mBluetoothReceiver == null && mBluetoothAdapter != null) {
+            // Create a BroadcastReceiver for ACTION_FOUND
+            mBluetoothReceiver = new BroadcastReceiver() {
+                public void onReceive(Context context, Intent intent) {
+                    String action = intent.getAction();
+                    // When discovery finds a device
+                    if (BluetoothDevice.ACTION_FOUND.equals(action)) {
+                        // Get the BluetoothDevice object from the Intent
+                        BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+
+                        if (device.getName().equals(deviceName)) {
+                            listener.onBluetoothDiscovered(device);
+
+                            // Unregister this receiver
+                            context.unregisterReceiver(mBluetoothReceiver);
+                            mBluetoothReceiver = null;
+
+                            // Stop discovery
+                            mBluetoothAdapter.cancelDiscovery();
+                        }
+                    }
+                }
+            };
+
+            // Register the BroadcastReceiver
+            IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_FOUND);
+            context.registerReceiver(mBluetoothReceiver, filter);
+
+            // Start discovery
+            mBluetoothAdapter.startDiscovery();
+
+            Handler handler = new Handler(Looper.getMainLooper());
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    listener.onBluetoothDiscoveryTimeout();
+
+                    // Unregister the receiver
+                    context.unregisterReceiver(mBluetoothReceiver);
+
+                    // Stop discovery
+                    mBluetoothAdapter.cancelDiscovery();
+                }
+            }, 1000L * 30L);
+        }
     }
 
 }
