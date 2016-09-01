@@ -3,14 +3,16 @@ package com.wmoffitt.roguedash.util;
 import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
-import android.content.BroadcastReceiver;
+import android.bluetooth.BluetoothGatt;
+import android.bluetooth.BluetoothGattCallback;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.os.Handler;
 import android.os.Looper;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
+
+import com.wmoffitt.roguedash.DashManager;
 
 import java.util.Set;
 
@@ -20,21 +22,16 @@ import java.util.Set;
  */
 public class BluetoothUtil {
 
-    public interface EnableBluetoothListener {
-        void onBluetoothEnabled();
-        void onBluetoothDenied();
-    }
-
     public interface BluetoothDiscoveryListener {
-        void onBluetoothDiscovered(@NonNull final BluetoothDevice device);
+        void onBluetoothDiscovered(@NonNull final BluetoothDevice device, int rssi, byte[] scanRecord);
         void onBluetoothDiscoveryTimeout();
     }
 
-    public static final int REQUEST_ENABLE_BT = 1000;
+    private static final long SCAN_PERIOD = 10L * 1000L; // 10 secs
 
     @Nullable private static BluetoothAdapter mBluetoothAdapter;
     private static boolean mBluetoothNonexistent;
-    @Nullable private static BroadcastReceiver mBluetoothReceiver;
+    private static boolean mScanning;
 
     public static BluetoothAdapter getBluetoothAdapter() {
         if (mBluetoothAdapter == null && !mBluetoothNonexistent) {
@@ -46,22 +43,19 @@ public class BluetoothUtil {
         return mBluetoothAdapter;
     }
 
-    public static void enableBluetoothIfNeeded(@NonNull final Activity activity) {
+    /**
+     * Ask user to enable bluetooth, unless not required
+     *
+     * @param activity Activity to pass result back to
+     * @return True if enable needed, false if not
+     */
+    public static boolean enableBluetoothIfNeeded(@NonNull final Activity activity) {
         if (mBluetoothAdapter != null && !mBluetoothAdapter.isEnabled()) {
             Intent enableBtIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
-            activity.startActivityForResult(enableBtIntent, REQUEST_ENABLE_BT);
+            activity.startActivityForResult(enableBtIntent, DashManager.REQUEST_ENABLE_BT);
+            return true;
         }
-    }
-
-    public static void handleEnableBTActivityResult(final int requestCode,
-                                                    final int resultCode,
-                                                    @NonNull final Intent data,
-                                                    @NonNull final EnableBluetoothListener listener) {
-        if (requestCode == REQUEST_ENABLE_BT && resultCode == Activity.RESULT_OK) {
-            listener.onBluetoothEnabled();
-        } else if (requestCode == REQUEST_ENABLE_BT && resultCode == Activity.RESULT_CANCELED) {
-            listener.onBluetoothDenied();
-        }
+        return false;
     }
 
     public static boolean isDeviceNamePaired(@NonNull final String deviceName) {
@@ -81,54 +75,48 @@ public class BluetoothUtil {
         return false;
     }
 
-    public static void startDiscoveryOfDeviceName(@NonNull final Context context,
-                                                  @NonNull final String deviceName,
+    @SuppressWarnings("deprecation")
+    public static void startDiscoveryOfDeviceName(@NonNull final String deviceName,
                                                   @NonNull final BluetoothDiscoveryListener listener) {
-        if (mBluetoothReceiver == null && mBluetoothAdapter != null) {
-            // Create a BroadcastReceiver for ACTION_FOUND
-            mBluetoothReceiver = new BroadcastReceiver() {
-                public void onReceive(Context context, Intent intent) {
-                    String action = intent.getAction();
-                    // When discovery finds a device
-                    if (BluetoothDevice.ACTION_FOUND.equals(action)) {
-                        // Get the BluetoothDevice object from the Intent
-                        BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+        if (mBluetoothAdapter != null) {
+            // Callback
+            final BluetoothAdapter.LeScanCallback callback = new BluetoothAdapter.LeScanCallback() {
+                @Override
+                public void onLeScan(BluetoothDevice device, int rssi, byte[] scanRecord) {
+                    if (device.getName().equals(deviceName)) {
+                        // Stop scanning
+                        mScanning = false;
+                        mBluetoothAdapter.stopLeScan(this);
 
-                        if (device.getName().equals(deviceName)) {
-                            listener.onBluetoothDiscovered(device);
-
-                            // Unregister this receiver
-                            context.unregisterReceiver(mBluetoothReceiver);
-                            mBluetoothReceiver = null;
-
-                            // Stop discovery
-                            mBluetoothAdapter.cancelDiscovery();
-                        }
+                        listener.onBluetoothDiscovered(device, rssi, scanRecord);
                     }
                 }
             };
 
-            // Register the BroadcastReceiver
-            IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_FOUND);
-            context.registerReceiver(mBluetoothReceiver, filter);
-
-            // Start discovery
-            mBluetoothAdapter.startDiscovery();
-
+            // Stops scanning after a pre-defined scan period.
             Handler handler = new Handler(Looper.getMainLooper());
             handler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
-                    listener.onBluetoothDiscoveryTimeout();
+                    if (mScanning) {
+                        // Stop scanning
+                        mScanning = false;
+                        mBluetoothAdapter.stopLeScan(callback);
 
-                    // Unregister the receiver
-                    context.unregisterReceiver(mBluetoothReceiver);
-
-                    // Stop discovery
-                    mBluetoothAdapter.cancelDiscovery();
+                        listener.onBluetoothDiscoveryTimeout();
+                    }
                 }
-            }, 1000L * 30L);
+            }, SCAN_PERIOD);
+
+            mScanning = true;
+            mBluetoothAdapter.startLeScan(callback);
         }
+    }
+
+    public static BluetoothGatt makeGattConnection(@NonNull final Context context,
+                                                   @NonNull final BluetoothDevice device,
+                                                   @NonNull final BluetoothGattCallback callback) {
+        return device.connectGatt(context, false, callback);
     }
 
 }
